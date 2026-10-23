@@ -13,23 +13,20 @@ TO PROVIDE A GOOD STRUCTURE FOR YOUR IMPLEMENTATION.
 from agent_base import KAgent
 from game_types import State, Game_Type
 
-AUTHORS = 'Jane Smith and Laura Lee' 
-STUDENT_IDS = ['jsmith99', 'llee2039'] # The first ID here should
-# match the one in the file name, e.g., jsmith99_KInARow.py.
+AUTHORS = 'Edward Schuster Bruce' 
+STUDENT_IDS = ['eschubru'] # The first ID here should match the one in the file name, 
 
-import time # You'll probably need this to avoid losing a
- # game due to exceeding a time limit.
+import time # You'll probably need this to avoid losing a game due to exceeding a time limit.
 
 # Create your own type of agent by subclassing KAgent:
 
-class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master
-    # knows how to instantiate your agent class.
+class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows how to instantiate your agent class.
 
     def __init__(self, twin=False):
         self.twin=twin
-        self.nickname = 'Nic'
+        self.nickname = 'ALI G'
         if twin: self.nickname += '2'
-        self.long_name = 'Templatus Skeletus'
+        self.long_name = 'Alistair Leslie Graham'
         if twin: self.long_name += ' II'
         self.persona = 'bland'
         self.voice_info = {'Chrome': 10, 'Firefox': 2, 'other': 0}
@@ -42,9 +39,8 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master
         self.playing_mode = KAgent.DEMO
 
     def introduce(self):
-        intro = '\nMy name is Templatus Skeletus.\n'+\
-            '"An instructor" made me.\n'+\
-            'Somebody please turn me into a real game-playing agent!\n'
+        intro = '\nAyy yo wagwan it be ALI-G here.\n'+\
+            '"A little birdy told me that we be playing tic tac toes for a giggle\n'
         if self.twin: intro += "By the way, I'm the TWIN.\n"
         return intro
 
