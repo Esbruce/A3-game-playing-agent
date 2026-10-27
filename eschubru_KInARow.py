@@ -16,6 +16,9 @@ from game_types import State, Game_Type
 AUTHORS = 'Edward Schuster Bruce' 
 STUDENT_IDS = ['eschubru'] # The first ID here should match the one in the file name, 
 
+WIN_SCORE = 1_000_000  # returned by static_eval when a completed k-in-a-row exists
+BASE = 10  # static_eval window weights: a window with n marks is worth BASE ** (n - 1)
+
 import time # You'll probably need this to avoid losing a game due to exceeding a time limit.
 
 # Create your own type of agent by subclassing KAgent:
@@ -62,18 +65,16 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
             pass ## leave for later once agent is working
             # Optionally, import your LLM API here.
             # Then you can use it to help create utterances.
-       
-        def __init__(self):
 
-            self.current_game_type = game_type # the game type is a class that has intial state which has a board representation
-            self.who_i_play = what_side_to_play
-            self.opponent_nickname = opponent_nickname
+        self.current_game_type = game_type # the game type is a class that has intial state which has a board representation
+        self.who_i_play = what_side_to_play
+        self.playing = what_side_to_play
+        self.opponent_nickname = opponent_nickname
 
+        ## need to still add initialisation of utterance
 
-            ## need to still add intialisation of utterance 
+        return "OK"
 
-            return "Ok"
-   
     # The core of your agent's ability should be implemented here:             
     def make_move(self, current_state, current_remark, time_limit=1000,
                   use_alpha_beta=True,
@@ -89,40 +90,40 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
 
         ## moves are denoted as a state coordinate and the only valid state to move to are those with state ''
 
-        best = None # (move, state, utterance)
+        best = None # (score, move, state)
+
+        # 3. Count blank squares before searching to detect a full board (game over).
+        #    A full board has no legal move, so return a None move; the game master
+        #    treats that as the end of the game.
+
+        blank_square_count = sum(row.count(' ') for row in current_state.board)
+
+        if blank_square_count == 0:
+            return [None, 'Dammit, no free squares left, game over']
 
         # 2. For each candidate position (i, j), build a successor state:
         #      new_s = State(old=current_state)       # deep copy
         #      new_s.board[i][j] = current_state.whose_move
         #      new_s.change_turn()                    # switch X <-> O
 
-        for i in range(len(current_state.board)):
-            for j in range(len(current_state.board[i])):
-                if current_state.board[i][j] != ' ':
+        for i in range(len(current_state.board)): # looping through the rows
+            for j in range(len(current_state.board[i])): # looping throught the columns
+                if current_state.board[i][j] != ' ': # if the cell is empty carry on
                     continue
 
                 new_s = State(old=current_state)
                 new_s.board[i][j] = current_state.whose_move
-                new_s.change_turn()
+                new_s.change_turn() # create a new succesor state
 
+                # 4. Call self.minimax(...) on the successor to score this move.
+                #    minimax's base cases handle a won or full board.
 
-                # 3. Count blank squares before searching to detect a full board (draw)
-                #    and to limit recursion depth appropriately.
-        
-                blank_square_count = sum(row.count(' ') for row in new_s.board)
+                score = self.minimax(state=new_s, depth_remaining= max_ply - 1, pruning=use_alpha_beta)[0] ## have already checked first depth
 
-                if blank_square_count == 0:
-                    return [None, 'Dammit, it appears 2 be a draw'] ## if no free squares then game is finished 
+                mover = current_state.whose_move
+                if (best is None or (mover == 'X' and score > best[0]) or (mover == 'O' and score < best[0])):
+                    best = (score, (i, j), new_s)
 
-                # 4. Call self.minimax(...) on the current state to get the best move.
-
-                elif blank_square_count > 0:
-                    score = self.minimax(state=new_s, depth_remaining= max_ply - 1, pruning=use_alpha_beta)[0] ## have already checked first depth
-
-                    mover = current_state.whose_move
-                    if (best is None or (mover == 'X' and score > best[0]) or (mover == 'O' and score < best[0])):
-                        best = (score, (i, j), new_s)
-                    
         # 5. Compose an utterance string appropriate to your agent's persona.
 
 
@@ -224,59 +225,61 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         k = game_type.k
 
 
-        DIRECTIONS = {
-            'horizontal': (0, 1),
-            'vertical':   (1, 0),
-            'diag_down':  (1, 1),    # top-left to bottom-right
-            'diag_up':    (1, -1),   # top-right to bottom-left
-            }
+        DIRECTIONS = ((0, 1), (1, 0), (1, 1), (1, -1))  # horizontal, vertical, both diagonals
 
-        
         board = state.board
         rows, cols = len(board), len(board[0])
-        data = {}
-        for r in range(rows): # iterate down rows
-            for c in range(cols):  # iterate across columns
 
-                for name, (dr, dc) in DIRECTIONS.items():
+        # Collection: tally live k-windows by how many marks the owner has in them.
+        # x_windows[n] = number of windows containing exactly n X's and no O's or '-'.
+        # Positions and directions are deliberately not stored; the scoring step below
+        # only needs counts. If positional features are ever needed, append
+        # (x, o, r, c, dr, dc) tuples to a flat list here instead.
+        x_windows = [0] * (k + 1)
+        o_windows = [0] * (k + 1)
 
-                    end_r, end_c = r + dr * (k - 1), c + dc * (k - 1) # get the end index of k in a row for each direction 
+        for r in range(rows):
+            for c in range(cols):
+                for dr, dc in DIRECTIONS:
+                    end_r, end_c = r + dr * (k - 1), c + dc * (k - 1)  # last square of the k-window
 
                     if not (0 <= end_r < rows and 0 <= end_c < cols):
-                        continue     # skip if k in a row does not fit on the board in that direction
+                        continue  # window does not fit on the board in this direction
 
-                    x = o = 0 # set the streak of x and o to 0 for this k window
-
+                    x = o = 0
                     dead = False
 
-                    for i in range(k): # complete the steps along the k squares in the search window
-
-                        cell = board[r + dr * i][c + dc * i] # calculate the cell
+                    for i in range(k):
+                        cell = board[r + dr * i][c + dc * i]
 
                         if cell == '-':
-                            dead = True # stop the streak
-                            break # do we need to keep going if the k in a row is already blocked 
-
+                            dead = True  # blocked square: nobody can win through this window
+                            break
                         elif cell == 'X':
-                            x += 1 # increase the x streak
-                        
+                            x += 1
                         elif cell == 'O':
-                            o += 1 # increase the o streak
-                    
-                    if dead or (x and o):  # blocked, so no one can win here 
-                        continue 
+                            o += 1
 
-                    data.setdefault((r, c), {})[name] = (x, o)
+                    if dead or (x and o):  # blocked or contested, so worth nothing
+                        continue
 
-        # calculate the static evaluation score
+                    # at most one of x, o is non-zero here
+                    if x:
+                        x_windows[x] += 1
+                    elif o:
+                        o_windows[o] += 1
 
-        score = 0 # instatiate the score with a zero value
+        # A completed window is a win; no need to weigh anything else.
+        if x_windows[k]:
+            return WIN_SCORE
+        if o_windows[k]:
+            return -WIN_SCORE
 
-        for directions in data.values():
-            for entry in directions.values():
-                score += entry[0] / k # add the x entry percentage of a k in row
-                score -= entry[1] / k # add the O entry percentage of a k in row
-                # note that only one of entry[0] and entry[1] will be no zero
+        # Scoring: edit the weights (or this formula) freely; the scan above is unaffected.
+        weights = [BASE ** (n - 1) if n else 0 for n in range(k + 1)]
+        score = 0
+        for n in range(1, k):
+            score += weights[n] * (x_windows[n] - o_windows[n])
 
         return score
 
