@@ -40,6 +40,7 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         self.zobrist_table_num_hits_this_turn = -1
         self.current_game_type = None
         self.playing_mode = KAgent.DEMO
+        self.special_static_eval_fn = None
 
     def introduce(self):
         intro = '\nAyy yo wagwan it be ALI-G here.\n'+\
@@ -84,13 +85,9 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         
         # --- HOW TO IMPLEMENT make_move ---
 
-
-        # 1. Generate candidate moves: iterate over rows and columns of
-        #    current_state.board; any square equal to ' ' is a legal move.
-
-        ## moves are denoted as a state coordinate and the only valid state to move to are those with state ''
-
-        best = None # (score, move, state)
+        # 1-2. Successor states (one per blank square) are generated inside minimax,
+        #      so make_move makes a single root call and the alpha-beta window is
+        #      shared across the root's children.
 
         # 3. Count blank squares before searching to detect a full board (game over).
         #    A full board has no legal move, so return a None move; the game master
@@ -101,50 +98,42 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         if blank_square_count == 0:
             return [None, 'Dammit, no free squares left, game over']
 
-        # 2. For each candidate position (i, j), build a successor state:
-        #      new_s = State(old=current_state)       # deep copy
-        #      new_s.board[i][j] = current_state.whose_move
-        #      new_s.change_turn()                    # switch X <-> O
+        # reset the per-turn statistics, and keep the autograder's evaluator (if any)
+        # so that minimax uses it at every leaf
+        self.alpha_beta_cutoffs_this_turn = 0
+        self.num_static_evals_this_turn = 0
+        self.zobrist_table_num_entries_this_turn = 0
+        self.zobrist_table_num_hits_this_turn = 0
+        self.special_static_eval_fn = special_static_eval_fn
 
-        for i in range(len(current_state.board)): # looping through the rows
-            for j in range(len(current_state.board[i])): # looping throught the columns
-                if current_state.board[i][j] != ' ': # if the cell is empty carry on
-                    continue
+        # 4. Call self.minimax(...) on the current state to get the best move.
+        #    max_ply is passed through unchanged (at least 1, so a move always comes back).
 
-                new_s = State(old=current_state)
-                new_s.board[i][j] = current_state.whose_move
-                new_s.change_turn() # create a new succesor state
-
-                # 4. Call self.minimax(...) on the successor to score this move.
-                #    minimax's base cases handle a won or full board.
-
-                score = self.minimax(state=new_s, depth_remaining= max_ply - 1, pruning=use_alpha_beta)[0] ## have already checked first depth
-
-                mover = current_state.whose_move
-                if (best is None or (mover == 'X' and score > best[0]) or (mover == 'O' and score < best[0])):
-                    best = (score, (i, j), new_s)
+        result = self.minimax(current_state, max(max_ply, 1), use_alpha_beta)
+        move, new_s = result[1], result[2]
 
         # 5. Compose an utterance string appropriate to your agent's persona.
 
+        utterance = 'Ayy, me takin square ' + str(move) + ', innit'
 
         # 6. Return format:
         #      DEMO / COMPETITION: [[move, new_state], utterance]
         #      AUTOGRADER:         [[move, new_state, stats], utterance]
-        #    where stats is a dict with keys defined in agent_base.py, e.g.:
-        #      stats['alpha_beta_cutoffs_this_turn']        = self.alpha_beta_cutoffs_this_turn
-        #      stats['num_static_evals_this_turn']          = self.num_static_evals_this_turn
-        #      stats['zobrist_table_num_entries_this_turn'] = self.zobrist_table_num_entries_this_turn
-        #      stats['zobrist_table_num_hits_this_turn']    = self.zobrist_table_num_hits_this_turn
-        
-        if self.playing_mode == 0 or self.playing_mode ==1: # is in demo mode
-            return [[best[0], best[1]], best[2]]
-            
-        elif self.playing_mode == 2: # is autograder mode
+        #    where stats is a dict with keys defined in agent_base.py.
 
-            ## add stats calculation in here
+        if self.playing_mode != KAgent.AUTOGRADER:
+            return [[move, new_s], utterance]
 
-            return [[best[0], best[1], None], best[2]]
-    
+        stats = {
+            'alpha_beta_cutoffs_this_turn': self.alpha_beta_cutoffs_this_turn,
+            'num_static_evals_this_turn': self.num_static_evals_this_turn,
+            'zobrist_table_num_entries_this_turn': self.zobrist_table_num_entries_this_turn,
+            'zobrist_table_num_hits_this_turn': self.zobrist_table_num_hits_this_turn,
+            'zobrist_num_useful_hits_for_minimax': 0,
+            'zobrist_num_useful_hits_for_ordering': 0
+        }
+
+        return [[move, new_s, stats], utterance]
 
     # The main adversarial search function:
     def minimax(self,
@@ -188,7 +177,7 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
 
         ## base cases: depth limit reached, or no blank squares left (draw)
         if depth_remaining == 0 or not children:
-            return [self.static_eval(state), None, None]
+            return [self.leaf_eval(state), None, None]
 
         is_max = (state.whose_move == 'X')
         best_val = float('-inf') if is_max else float('inf')
@@ -207,10 +196,18 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
                 else:
                     beta = min(beta, best_val)
                 if alpha >= beta:
+                    self.alpha_beta_cutoffs_this_turn += 1
                     break  # remaining siblings cannot change the result
 
         return [best_val, best_move, best_state]
  
+    # Evaluate a leaf, counting it; the autograder supplies its own evaluator.
+    def leaf_eval(self, state):
+        self.num_static_evals_this_turn += 1
+        if self.special_static_eval_fn is not None:
+            return self.special_static_eval_fn(state)
+        return self.static_eval(state)
+
     def static_eval(self, state, game_type=None):
         # Return a numeric score: positive = good for X, negative = good for O.
         # Use game_type.k (the win length) to evaluate partial lines.
