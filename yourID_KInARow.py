@@ -1,6 +1,8 @@
 '''
-eschubru_KInARow.py
-Authors: Schuster Bruce, Edward 
+<yourID>_KInARow.py
+Authors: <your name(s) here, lastname first and partners separated by ";">
+  Example:  
+    Authors: Smith, Jane; Lee, Laura
 
 An agent for playing "K-in-a-Row with Forbidden Squares" and related games.
 
