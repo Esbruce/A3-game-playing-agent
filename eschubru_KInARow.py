@@ -19,6 +19,22 @@ STUDENT_IDS = ['eschubru'] # The first ID here should match the one in the file 
 WIN_SCORE = 1_000_000  # returned by static_eval when a completed k-in-a-row exists
 BASE = 10  # static_eval window weights: a window with n marks is worth BASE ** (n - 1)
 
+# Ali G's deterministic utterances. {} is filled with the chosen square. Each line is a
+# fixed non-empty string, so every make_move return path has at least one word.
+
+UTTERANCE_BANK = [
+    "Wagwan! Me puttin it on {}, innit.",
+    "Booyakasha, {} is where the action be at.",
+    "Respect to you, but me takin {} anyway.",
+    "Is it cos I is thinkin ahead? {} it is.",
+    "Big up yourself, but {} be mine.",
+    "Me no like to boast, but {} is well sick.",
+    "Check it, {}. Dat is how we roll in da tic tac toe massive.",
+]
+WINNING_UTTERANCE = "Booyakasha! Me seen da win at {}. Respect da maths, innit."
+LOSING_UTTERANCE = "Aiii, dat {} look bad for me, but me still got da swagger."
+
+import random # for the Zobrist keys
 import time # You'll probably need this to avoid losing a game due to exceeding a time limit.
 
 # Create your own type of agent by subclassing KAgent:
@@ -38,6 +54,17 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         self.num_static_evals_this_turn = -1
         self.zobrist_table_num_entries_this_turn = -1
         self.zobrist_table_num_hits_this_turn = -1
+        # Zobrist hashing state (all of this is unused while use_zobrist_hashing is False):
+        self.zobrist_table_num_reads_this_turn = -1 # read attempts (hits are the successful ones)
+        self.zobrist_num_useful_hits_for_minimax = -1 # hits deep enough to reuse a stored value
+        self.zobrist_num_useful_hits_for_ordering = -1 # hits used to try the stored best move first
+        self.utterance_count = 0 # utterances made so far this game, to rotate through UTTERANCE_BANK
+        self.use_zobrist_hashing = False # copied from make_move's argument each turn
+        self.zobrist_table = {} # the transposition table: position hash -> (depth searched, value, bound flag, best move)
+        self.zobrist_keys = None # (row, col, piece) -> random 64-bit int; built in make_move once the board size is known
+        self.zobrist_turn = 0 # random 64-bit int XORed in when it is O's move, so X-to-move and O-to-move hash differently
+        self.zobrist_dims = None # (rows, cols) the keys were built for; rebuilt if the board size changes
+        self.zobrist_root = None # the state make_move was called with; never answered from the table
         self.current_game_type = None
         self.playing_mode = KAgent.DEMO
         self.special_static_eval_fn = None
@@ -71,8 +98,10 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         self.who_i_play = what_side_to_play
         self.playing = what_side_to_play
         self.opponent_nickname = opponent_nickname
-
-        ## need to still add initialisation of utterance
+        # a new game: stored results (and keys, which depend on board size) from the last one do not apply
+        self.zobrist_table = {}
+        self.zobrist_keys = None
+        self.utterance_count = 0 # start the utterance rotation again for the new game
 
         return "OK"
 
@@ -102,9 +131,32 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         # so that minimax uses it at every leaf
         self.alpha_beta_cutoffs_this_turn = 0
         self.num_static_evals_this_turn = 0
-        self.zobrist_table_num_entries_this_turn = 0
-        self.zobrist_table_num_hits_this_turn = 0
+        self.zobrist_table_num_entries_this_turn = 0 # writes to the table
+        self.zobrist_table_num_hits_this_turn = 0 # lookups that found an entry
+        self.zobrist_table_num_reads_this_turn = 0 # lookups attempted
+        self.zobrist_num_useful_hits_for_minimax = 0
+        self.zobrist_num_useful_hits_for_ordering = 0
+        # Stored values come from whichever evaluator was in use. If the evaluator has
+        # changed (e.g. the autograder's special function), they are no longer comparable.
+        if special_static_eval_fn is not self.special_static_eval_fn:
+            self.zobrist_table = {}
         self.special_static_eval_fn = special_static_eval_fn
+
+        # Zobrist hashing setup: one random 64-bit key per (square, piece), built once per
+        # board size. A position's hash is the XOR of the keys of the pieces on it.
+        self.use_zobrist_hashing = use_zobrist_hashing
+        # The root must be searched, not answered from the table, because make_move needs
+        # the move and state minimax returns for it (a table hit returns no state).
+        self.zobrist_root = current_state
+        if use_zobrist_hashing:
+            dims = (len(current_state.board), len(current_state.board[0]))
+            if self.zobrist_keys is None or self.zobrist_dims != dims: # first use, or a different board size
+                rng = random.Random(415) # fixed seed, so runs are repeatable
+                self.zobrist_keys = {(i, j, piece): rng.getrandbits(64)
+                                     for i in range(dims[0]) for j in range(dims[1]) for piece in 'XO'}
+                self.zobrist_turn = rng.getrandbits(64) # distinguishes X-to-move from O-to-move
+                self.zobrist_dims = dims
+                self.zobrist_table = {} # old hashes were made with different keys
 
         # 4. Call self.minimax(...) on the current state to get the best move.
         #    max_ply is passed through unchanged (at least 1, so a move always comes back).
@@ -114,7 +166,17 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
 
         # 5. Compose an utterance string appropriate to your agent's persona.
 
-        utterance = 'Ayy, me takin square ' + str(move) + ', innit'
+        # Deterministic, in character, and never empty: a forced win or loss found by the
+        # search gets its own line, otherwise rotate through the bank. The score is from X's
+        # point of view, so flip it to be from the mover's point of view.
+        mover_score = result[0] if current_state.whose_move == 'X' else -result[0]
+        if mover_score >= WIN_SCORE:
+            utterance = WINNING_UTTERANCE.format(move)
+        elif mover_score <= -WIN_SCORE:
+            utterance = LOSING_UTTERANCE.format(move)
+        else:
+            utterance = UTTERANCE_BANK[self.utterance_count % len(UTTERANCE_BANK)].format(move)
+        self.utterance_count += 1
 
         # 6. Return format:
         #      DEMO / COMPETITION: [[move, new_state], utterance]
@@ -129,8 +191,8 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
             'num_static_evals_this_turn': self.num_static_evals_this_turn,
             'zobrist_table_num_entries_this_turn': self.zobrist_table_num_entries_this_turn,
             'zobrist_table_num_hits_this_turn': self.zobrist_table_num_hits_this_turn,
-            'zobrist_num_useful_hits_for_minimax': 0,
-            'zobrist_num_useful_hits_for_ordering': 0
+            'zobrist_num_useful_hits_for_minimax': self.zobrist_num_useful_hits_for_minimax,
+            'zobrist_num_useful_hits_for_ordering': self.zobrist_num_useful_hits_for_ordering
         }
 
         return [[move, new_s, stats], utterance]
@@ -159,11 +221,64 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         # Return at minimum [score, best_move, best_state].
         # Additional values after index 0 can carry info back to make_move.
 
+        # None means "do not use this feature": a None pruning is treated as False, and a
+        # None alpha or beta becomes an unbounded window. When pruning is falsy, alpha and
+        # beta are never read for a decision (no window update, no cutoff, no stored-bound
+        # use), so whatever values are passed in are ignored.
         # only set the window on the root call; children receive the parent's window
         if alpha is None:
             alpha = float('-inf')
         if beta is None:
             beta = float('inf')
+
+        # terminal state: a completed k-in-a-row ends the game, so do not expand it;
+        # it counts as a leaf. Closer wins score higher (and closer losses lower)
+        # via depth_remaining. Skipped in AUTOGRADER mode, where the search must be
+        # driven only by the special static evaluation function and max_ply.
+        if self.special_static_eval_fn is None:
+            terminal = self.static_eval(state)
+            if terminal == WIN_SCORE or terminal == -WIN_SCORE:
+                self.num_static_evals_this_turn += 1
+                return [float(terminal + (depth_remaining if terminal > 0 else -depth_remaining)), None, None]
+
+        # Zobrist hashing, part 1 (lookup): compute this position's hash, then look it up
+        # and reuse a stored result if it was searched at least as deep. A stored bound
+        # (from a pruned search) can still
+        # tighten the window or cause a cutoff.
+        alpha_orig, beta_orig = alpha, beta # the window as passed in; needed later to classify the result as exact or a bound
+        zhash = None # stays None when hashing is off, which also skips the store at the end
+        stored = None
+        if self.use_zobrist_hashing and depth_remaining > 0: # leaves are cheap to evaluate, so only internal nodes use the table
+            # the hash is the XOR of the keys of every X and O on the board
+            zhash = 0
+            for i in range(len(state.board)):
+                for j in range(len(state.board[i])):
+                    key = self.zobrist_keys.get((i, j, state.board[i][j])) # None for blank/forbidden squares
+                    if key:
+                        zhash ^= key
+            if state.whose_move == 'O': # the same board with a different side to move is a different position
+                zhash ^= self.zobrist_turn
+
+            self.zobrist_table_num_reads_this_turn += 1
+            stored = self.zobrist_table.get(zhash)
+            if stored is not None:
+                self.zobrist_table_num_hits_this_turn += 1
+                stored_depth, stored_val, stored_flag, stored_move = stored
+                # only trust an entry searched at least as deep as we need now
+                if stored_depth >= depth_remaining and state is not self.zobrist_root:
+                    if stored_flag == 'EXACT': # the true value: return it without searching
+                        self.zobrist_num_useful_hits_for_minimax += 1
+                        return [stored_val, stored_move, None] # no state: only make_move's root call needs one
+                    if pruning:
+                        # a bound: LOWER means the true value is >= stored_val, UPPER means <=.
+                        # Use it to narrow the window, and stop if the window closes.
+                        if stored_flag == 'LOWER':
+                            alpha = max(alpha, stored_val)
+                        else:
+                            beta = min(beta, stored_val)
+                        if alpha >= beta:
+                            self.zobrist_num_useful_hits_for_minimax += 1
+                            return [stored_val, stored_move, None]
 
         # generate the successors once, so a single break can leave the search
         children = []
@@ -177,7 +292,20 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
 
         ## base cases: depth limit reached, or no blank squares left (draw)
         if depth_remaining == 0 or not children:
-            return [self.leaf_eval(state), None, None]
+            self.num_static_evals_this_turn += 1
+            if self.special_static_eval_fn is not None: # autograder supplies its own evaluator
+                return [float(self.special_static_eval_fn(state)), None, None]
+            return [float(self.static_eval(state)), None, None]
+
+        # Zobrist hashing, part 2 (ordering): even when a stored entry could not be reused
+        # directly, its best move is a good guess. Trying it first makes alpha-beta cut off
+        # sooner. Not in AUTOGRADER mode, where moves must be considered in row-major order.
+        if stored is not None and stored[3] is not None and pruning and self.special_static_eval_fn is None:
+            for n in range(len(children)):
+                if children[n][0] == stored[3]:
+                    children.insert(0, children.pop(n))
+                    self.zobrist_num_useful_hits_for_ordering += 1
+                    break
 
         is_max = (state.whose_move == 'X')
         best_val = float('-inf') if is_max else float('inf')
@@ -187,7 +315,9 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         for move, child in children:
             score = self.minimax(child, depth_remaining - 1, pruning, alpha, beta)[0]
 
-            if (is_max and score > best_val) or (not is_max and score < best_val):
+            # the first child is always taken, so a move is returned even if every score
+            # equals the starting +-infinity (or is NaN); after that only a strictly better one replaces it
+            if best_move is None or (is_max and score > best_val) or (not is_max and score < best_val):
                 best_val, best_move, best_state = score, move, child
 
             if pruning:
@@ -199,15 +329,25 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
                     self.alpha_beta_cutoffs_this_turn += 1
                     break  # remaining siblings cannot change the result
 
-        return [best_val, best_move, best_state]
- 
-    # Evaluate a leaf, counting it; the autograder supplies its own evaluator.
-    def leaf_eval(self, state):
-        self.num_static_evals_this_turn += 1
-        if self.special_static_eval_fn is not None:
-            return self.special_static_eval_fn(state)
-        return self.static_eval(state)
+        # Zobrist hashing, part 3 (store): record this position's result, flagged as exact
+        # or as a bound if pruning cut the search short.
+        if zhash is not None:
+            if not pruning:
+                flag = 'EXACT' # every child was searched fully
+            elif best_val <= alpha_orig:
+                flag = 'UPPER' # no move beat what was already available, so the true value is at most best_val
+            elif best_val >= beta_orig:
+                flag = 'LOWER' # a cutoff happened, so the true value is at least best_val
+            else:
+                flag = 'EXACT' # the value fell inside the window, so it is the true value
+            # do not let a shallower search overwrite a deeper one
+            if stored is None or depth_remaining >= stored[0]:
+                self.zobrist_table[zhash] = (depth_remaining, best_val, flag, best_move)
+                self.zobrist_table_num_entries_this_turn += 1
 
+        # the score is always a float, as the brief requires, alongside the move (and state)
+        return [float(best_val), best_move, best_state]
+ 
     def static_eval(self, state, game_type=None):
         # Return a numeric score: positive = good for X, negative = good for O.
         # Use game_type.k (the win length) to evaluate partial lines.
