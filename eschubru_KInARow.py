@@ -16,8 +16,20 @@ from game_types import State, Game_Type
 AUTHORS = 'Edward Schuster Bruce' 
 STUDENT_IDS = ['eschubru'] # The first ID here should match the one in the file name, 
 
-WIN_SCORE = 1_000_000  # returned by static_eval when a completed k-in-a-row exists
+TIME_MARGIN = 0.8  # fraction of time_limit the search may use, leaving room for overhead
+DEMO_TIME_CAP = 2.5  # seconds; demo moves should take under 3 s whatever time_limit says
+NODE_CHECK_INTERVAL = 256  # minimax checks the clock once per this many nodes
+
+class OutOfTime(Exception):
+    pass  # raised inside minimax when the deadline passes; make_move keeps the last finished depth
+
 BASE = 10  # static_eval window weights: a window with n marks is worth BASE ** (n - 1)
+
+def win_score_for(k):
+    # Returned by static_eval when a completed k-in-a-row exists. The best window weight is
+    # BASE ** (k - 2) and a board holds many such windows, so BASE ** (k + 1) keeps a real win
+    # above any unfinished position whatever k is.
+    return BASE ** (k + 1)
 
 # Ali G's deterministic utterances. {} is filled with the chosen square. Each line is a
 # fixed non-empty string, so every make_move return path has at least one word.
@@ -31,11 +43,34 @@ UTTERANCE_BANK = [
     "Me no like to boast, but {} is well sick.",
     "Check it, {}. Dat is how we roll in da tic tac toe massive.",
 ]
-WINNING_UTTERANCE = "Booyakasha! Me seen da win at {}. Respect da maths, innit."
+
+BLOCKING_UTTERANCE = "Ayy well that wasn't very nice"
+TWIN_HEADSTART_UTTERANCE = "Go on then, you take a headstart. I'm so much better than the original I'll still smash you."
+
+WINNING_UTTERANCE = "Booyakasha! Me seen da win at {}. Respect da maths g, innit."
 LOSING_UTTERANCE = "Aiii, dat {} look bad for me, but me still got da swagger."
 
 import random # for the Zobrist keys
 import time # You'll probably need this to avoid losing a game due to exceeding a time limit.
+
+def blocks_k_in_a_row(board, move, mover, k):
+    # True if the opponent playing on `move` (before the mover takes it) would have completed
+    # k in a row, i.e. the mover's piece there stops an immediate opponent win.
+    opponent = 'O' if mover == 'X' else 'X'
+    row, col = move
+    for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        run = 1  # the square itself
+        for sign in (1, -1):
+            r, c = row + sign * dr, col + sign * dc
+            while 0 <= r < len(board) and 0 <= c < len(board[r]) and board[r][c] == opponent:
+                run += 1
+                r, c = r + sign * dr, c + sign * dc
+        if run >= k:
+            return True
+    return False
+
+def current_state_blank_count(state):
+    return sum(row.count(' ') for row in state.board)
 
 # Create your own type of agent by subclassing KAgent:
 
@@ -44,7 +79,7 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
     def __init__(self, twin=False):
         self.twin=twin
         self.nickname = 'ALI G'
-        if twin: self.nickname += '2'
+        if twin: self.nickname += '2.0 (the self aclaimed better twin)'
         self.long_name = 'Alistair Leslie Graham'
         if twin: self.long_name += ' II'
         self.persona = 'bland'
@@ -68,11 +103,16 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         self.current_game_type = None
         self.playing_mode = KAgent.DEMO
         self.special_static_eval_fn = None
+        self.expected_time_per_move = 0.1 # seconds, from prepare
+        self.deadline = None # perf_counter() value after which minimax stops; None means no limit
+        self.nodes_since_clock_check = 0
+        self.win_score = win_score_for(3) # value of a completed line; reset from k in make_move
+        self.depth_reached_this_turn = 0 # deepest fully completed iteration, for utterances
 
     def introduce(self):
         intro = '\nAyy yo wagwan it be ALI-G here.\n'+\
             '"A little birdy told me that we be playing tic tac toes for a giggle\n'
-        if self.twin: intro += "By the way, I'm the TWIN.\n"
+        if self.twin: intro += "By the way, I'm the the Upgrade.\n"
         return intro
 
     # Receive and acknowledge information about the game from
@@ -98,6 +138,7 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         self.who_i_play = what_side_to_play
         self.playing = what_side_to_play
         self.opponent_nickname = opponent_nickname
+        self.expected_time_per_move = expected_time_per_move
         # a new game: stored results (and keys, which depend on board size) from the last one do not apply
         self.zobrist_table = {}
         self.zobrist_keys = None
@@ -127,6 +168,22 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         if blank_square_count == 0:
             return [None, 'Dammit, no free squares left, game over']
 
+        # The arrogant twin throws away his first go to give his opponent a headstart: he
+        # plays the first blank square without searching. (Not in the autograder, which
+        # checks exact search statistics.)
+        if self.twin and self.utterance_count == 0 and self.playing_mode != KAgent.AUTOGRADER:
+            for i, row in enumerate(current_state.board):
+                for j, square in enumerate(row):
+                    if square == ' ':
+                        new_s = State(old=current_state)
+                        new_s.board[i][j] = current_state.whose_move
+                        new_s.change_turn()
+                        self.utterance_count += 1
+                        return [[(i, j), new_s], TWIN_HEADSTART_UTTERANCE]
+
+        if self.current_game_type is not None:
+            self.win_score = win_score_for(self.current_game_type.k)
+
         # reset the per-turn statistics, and keep the autograder's evaluator (if any)
         # so that minimax uses it at every leaf
         self.alpha_beta_cutoffs_this_turn = 0
@@ -136,8 +193,10 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         self.zobrist_table_num_reads_this_turn = 0 # lookups attempted
         self.zobrist_num_useful_hits_for_minimax = 0
         self.zobrist_num_useful_hits_for_ordering = 0
+
         # Stored values come from whichever evaluator was in use. If the evaluator has
         # changed (e.g. the autograder's special function), they are no longer comparable.
+
         if special_static_eval_fn is not self.special_static_eval_fn:
             self.zobrist_table = {}
         self.special_static_eval_fn = special_static_eval_fn
@@ -161,7 +220,44 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         # 4. Call self.minimax(...) on the current state to get the best move.
         #    max_ply is passed through unchanged (at least 1, so a move always comes back).
 
-        result = self.minimax(current_state, max(max_ply, 1), use_alpha_beta)
+        max_ply = max(max_ply, 1)
+        if self.playing_mode == KAgent.AUTOGRADER:
+            # the autograder checks exact leaf counts, so search exactly max_ply with no clock
+            self.deadline = None
+            result = self.minimax(current_state, max_ply, use_alpha_beta)
+            self.depth_reached_this_turn = max_ply
+        else:
+            # Iterative deepening: search 1, 2, ... ply, keeping the last finished result, until
+            # the deadline passes. Depth 1 always finishes so a move always comes back. In
+            # COMPETITION mode max_ply is only a floor and the clock decides how deep to go;
+            # in DEMO mode max_ply is also the ceiling.
+            # the brief allows time_limit=None, meaning no limit set by the game master
+            budget = float('inf') if time_limit is None else TIME_MARGIN * time_limit
+            if self.playing_mode == KAgent.DEMO:
+                budget = min(budget, DEMO_TIME_CAP)
+            elif budget == float('inf'):
+                budget = DEMO_TIME_CAP # competition with no stated limit: stay modest
+            start = time.perf_counter()
+            self.nodes_since_clock_check = 0
+            result = None
+            depth = 1
+            while True:
+                self.deadline = None if depth == 1 else start + budget
+                try:
+                    result = self.minimax(current_state, depth, use_alpha_beta)
+                except OutOfTime:
+                    break
+                self.depth_reached_this_turn = depth
+                if abs(result[0]) >= self.win_score: # forced result found, deeper search cannot change it
+                    break
+                if self.playing_mode == KAgent.DEMO and depth >= max_ply:
+                    break
+                if depth >= current_state_blank_count(current_state): # whole game tree searched
+                    break
+                depth += 1
+                if time.perf_counter() - start >= budget:
+                    break
+            self.deadline = None
         move, new_s = result[1], result[2]
 
         # 5. Compose an utterance string appropriate to your agent's persona.
@@ -170,9 +266,12 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         # search gets its own line, otherwise rotate through the bank. The score is from X's
         # point of view, so flip it to be from the mover's point of view.
         mover_score = result[0] if current_state.whose_move == 'X' else -result[0]
-        if mover_score >= WIN_SCORE:
+        if mover_score >= self.win_score:
             utterance = WINNING_UTTERANCE.format(move)
-        elif mover_score <= -WIN_SCORE:
+        elif (self.current_game_type is not None and move is not None and
+              blocks_k_in_a_row(current_state.board, move, current_state.whose_move, self.current_game_type.k)):
+            utterance = BLOCKING_UTTERANCE
+        elif mover_score <= -self.win_score:
             utterance = LOSING_UTTERANCE.format(move)
         else:
             utterance = UTTERANCE_BANK[self.utterance_count % len(UTTERANCE_BANK)].format(move)
@@ -227,28 +326,43 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
         # use), so whatever values are passed in are ignored.
         # only set the window on the root call; children receive the parent's window
         if alpha is None:
-            alpha = float('-inf')
+            alpha = float('-inf')  # initialise at inf
         if beta is None:
             beta = float('inf')
+
+        # time management: look at the clock only every so often, since perf_counter is not free
+        if self.deadline is not None:
+            self.nodes_since_clock_check += 1
+            if self.nodes_since_clock_check >= NODE_CHECK_INTERVAL: 
+                self.nodes_since_clock_check = 0
+                if time.perf_counter() > self.deadline:
+                    raise OutOfTime()
 
         # terminal state: a completed k-in-a-row ends the game, so do not expand it;
         # it counts as a leaf. Closer wins score higher (and closer losses lower)
         # via depth_remaining. Skipped in AUTOGRADER mode, where the search must be
         # driven only by the special static evaluation function and max_ply.
+
         if self.special_static_eval_fn is None:
             terminal = self.static_eval(state)
-            if terminal == WIN_SCORE or terminal == -WIN_SCORE:
+            if terminal == self.win_score or terminal == -self.win_score: # check if the game is one
                 self.num_static_evals_this_turn += 1
-                return [float(terminal + (depth_remaining if terminal > 0 else -depth_remaining)), None, None]
+                return [float(terminal + (depth_remaining if terminal > 0 else -depth_remaining)), None, None] 
+            
 
         # Zobrist hashing, part 1 (lookup): compute this position's hash, then look it up
-        # and reuse a stored result if it was searched at least as deep. A stored bound
-        # (from a pruned search) can still
-        # tighten the window or cause a cutoff.
+        # and reuse a stored result if it was searched at least as deep.
+        # A stored bound (from a pruned search) can still tighten the window or cause a cutoff.
+
         alpha_orig, beta_orig = alpha, beta # the window as passed in; needed later to classify the result as exact or a bound
+
         zhash = None # stays None when hashing is off, which also skips the store at the end
         stored = None
+
+        ## generate zobrist key
+
         if self.use_zobrist_hashing and depth_remaining > 0: # leaves are cheap to evaluate, so only internal nodes use the table
+
             # the hash is the XOR of the keys of every X and O on the board
             zhash = 0
             for i in range(len(state.board)):
@@ -259,17 +373,27 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
             if state.whose_move == 'O': # the same board with a different side to move is a different position
                 zhash ^= self.zobrist_turn
 
+        
+
+
             self.zobrist_table_num_reads_this_turn += 1
-            stored = self.zobrist_table.get(zhash)
-            if stored is not None:
-                self.zobrist_table_num_hits_this_turn += 1
+            stored = self.zobrist_table.get(zhash) # check the transposition table using the previously generated key ()
+
+            if stored is not None: # if there is a stored evaluation use it
+
+                self.zobrist_table_num_hits_this_turn += 1 # count the number of times the transposition has resulted in a match
+
                 stored_depth, stored_val, stored_flag, stored_move = stored
+
                 # only trust an entry searched at least as deep as we need now
-                if stored_depth >= depth_remaining and state is not self.zobrist_root:
-                    if stored_flag == 'EXACT': # the true value: return it without searching
+                if stored_depth >= depth_remaining and state is not self.zobrist_root: 
+
+                    if stored_flag == 'EXACT': # the true value: return it without searching 
                         self.zobrist_num_useful_hits_for_minimax += 1
-                        return [stored_val, stored_move, None] # no state: only make_move's root call needs one
-                    if pruning:
+                        return [stored_val, stored_move, None] # no state: only make_move's root call needs one 
+                    
+                    if pruning: # complete pruning
+
                         # a bound: LOWER means the true value is >= stored_val, UPPER means <=.
                         # Use it to narrow the window, and stop if the window closes.
                         if stored_flag == 'LOWER':
@@ -320,7 +444,7 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
             if best_move is None or (is_max and score > best_val) or (not is_max and score < best_val):
                 best_val, best_move, best_state = score, move, child
 
-            if pruning:
+            if pruning: # prune
                 if is_max:
                     alpha = max(alpha, best_val)
                 else:
@@ -331,6 +455,7 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
 
         # Zobrist hashing, part 3 (store): record this position's result, flagged as exact
         # or as a bound if pruning cut the search short.
+
         if zhash is not None:
             if not pruning:
                 flag = 'EXACT' # every child was searched fully
@@ -347,7 +472,8 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
 
         # the score is always a float, as the brief requires, alongside the move (and state)
         return [float(best_val), best_move, best_state]
- 
+
+
     def static_eval(self, state, game_type=None):
         # Return a numeric score: positive = good for X, negative = good for O.
         # Use game_type.k (the win length) to evaluate partial lines.
@@ -408,9 +534,9 @@ class OurAgent(KAgent):  # Keep the class name "OurAgent" so a game master knows
 
         # A completed window is a win; no need to weigh anything else.
         if x_windows[k]:
-            return WIN_SCORE
+            return win_score_for(k)
         if o_windows[k]:
-            return -WIN_SCORE
+            return -win_score_for(k)
 
         # Scoring: edit the weights (or this formula) freely; the scan above is unaffected.
         weights = [BASE ** (n - 1) if n else 0 for n in range(k + 1)]

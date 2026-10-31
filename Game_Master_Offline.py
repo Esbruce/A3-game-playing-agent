@@ -23,8 +23,9 @@ from game_types import TTT, FIAR, Cassini
 #                  speaking the utterances aloud
 # Turn either off here if you do not want that file.  You should not need to
 # change anything else about the recording to do the assignment.
+
 USE_HTML = True
-USE_JSON = True
+USE_JSON = False ## changed from default
 
 
 class _Recorders:
@@ -217,7 +218,7 @@ def test():
     # Stand-alone test
     print("Starting stand-alone test of GameMaster.py")
     # Edit this to change what version of K-in-a-Row is used.
-    set_game(TTT) # default is Tic-Tac-Toe
+    set_game(Cassini) # default is Tic-Tac-Toe
     #set_game(FIAR) # Five in a Row
     # Import 1 or 2 agent files here.
     # If using only 1, create 2 instances of it, one of
@@ -225,8 +226,9 @@ def test():
 
     #import yourID_KInARow as h
     import RandomPlayer as h
+    import eschubru_KInARow as e
     px = h.OurAgent()
-    po = h.OurAgent(twin=True)
+    po = e.OurAgent()
     set_players(px, po)
     print("Players are set.")
     print("Now let's run the game.")

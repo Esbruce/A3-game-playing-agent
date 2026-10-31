@@ -56,11 +56,11 @@
   <hr>
   <b>Basic Information</b>
   <pre>
-Student name(s):     (Lastname, Firstname; Lastname2, Firstname2 if partnered)
-Student ID(s):
-Agent name:
-Game-type focus:     (e.g., Tic-Tac-Toe, Cassini, Five-in-a-Row)
-Submission date:
+Student name(s): Schuster Bruce, Edward   (Lastname, Firstname; Lastname2, Firstname2 if partnered)
+Student ID(s): Eschubru
+Agent name: Ali-G 
+Game-type focus: All   (e.g., Tic-Tac-Toe, Cassini, Five-in-a-Row)
+Submission date: 10/30/2026
   </pre>
   <font color="blue">Fill in above.</font>
   </font></td></tr>
@@ -76,7 +76,12 @@ character? What level of search capability (minimax depth, alpha-beta,
 optional extras) did you aim for? If you worked with a partner, briefly
 note how you divided the work.
   </pre>
-  <font color="blue">Write your response here.</font>
+  <font color="blue">My intention was to build an agent with a fun light-hearted persona, that to everybody's surprise, is a serious tic-tac-toe force to be reckoned with.
+    An equally important goal of mine for this assignment was to work more efficiently with AI, by identifying where to delegate.
+    I knew that I wanted my agent to compete for the big prizes and so I wanted to implement the extra credit work, such as using a transposition table etc, 
+    however this meant a lot of work so I decided to get claude code to draft up a minimal operable code, to give me a headstart for adding in the more complicated stuff. 
+    I had also had the goal of using an API for the utterances but decided to focus on the game playing part. 
+  </font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -102,7 +107,16 @@ note how you divided the work.
     and which did you test least?  Any known weaknesses on a particular
     board size or k value?
   </pre>
-  <font color="blue">Write your response here.</font>
+  <font color="blue">
+2a. Agent identity: Agent name: Ali-G, He is based on the fictional comedical character played by Sacha Baron Cohen, whom a new movie is being released soon. He was the perfect fit
+of being stereotypically dumb, and therefore humorously contrast with the impressive playing abilities of the ALI-G agent. 
+
+2b. Twin: The twin believes that he is better than the original, but as a matter of fact he may be more
+confident but he doesn't possess any beneficial strategies, in fact his arrogance leads him to let his twin have a headstart go. 
+
+2c. Game-type coverage: I have tested the agents on all the boards fairly equally have not found any apparent weaknesses yet. 
+
+  </font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -123,7 +137,14 @@ chronological order.  Key areas to address:
   - What resources (lecture notes, readings, outside references)
     were most useful?
   </pre>
-  <font color="blue">Write your response here.</font>
+  <font color="blue">(1) I followed the commented instructions to develop the skeleton, but came across an ambiguity doing so. The way the comments were written suggested opening child nodes in the make move method, however It seemed much more logical to leave that functionality solely to the minimax method. 
+  (2) I ordered development in this sequence, setting the agent name and initialisation (easy to do and at the top of the file), basic static evaluation function (required for minimax), minimax function (required for make_move), make_move (required to run games), alpha-beta pruning (clear first step in improving the working agent), advanced static evaluation function (likewise time to improve the agent),  iterative deepening (static evaluation function had become hefty so iterative deepening became relevant), zobrist hashing and transposition table (likewise to reason for iterative deepening), utterance bank for agent (Completed last as it seemed less high priority to get done and statements conditionally rely on game states).
+(3) I asked an LLM to create in character statements that were generic enough to be reusable but also specific enough to communicate some game awareness. These were hard coded statements that were selected conditionally based on the stage of the game. The final utterances are actually the first utterances that were developed. It seemed to work well. 
+(4) I watched 
+Ep 025: The XOR Logic Gate, Intermation YouTube (to understand key generation and why it works), 
+Claude: for explaining the concept of zobrist hashing. 
+Lecture notes on minimax.
+  </font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -170,8 +191,68 @@ of how minimax works in textbooks are not sufficient.
     Blank squares in row-major order: (1,1), (1,2), (2,0), (2,1).
     Expected best move: (1,2).  Plain-minimax leaf count: 12.
   </pre>
-  <font color="blue">Write your response here.  For 4d, you may include a hand-drawn
-scan, an ASCII diagram, or a clearly formatted text tree.</font>
+  <font color="blue">
+<p>4a. In my implementation, alpha-beta cutoffs are detected in two places in the minimax method.
+
+The first is the main move loop. 
+After each child is searched, I update alpha if it is the maximising player's turn (X), or beta if it is the minimising player's turn (O). 
+Alpha is the best score the maximiser can already guarantee on the path so far, and beta is the best score the minimiser can already guarantee. 
+If alpha >= beta, the player above would never let the game reach this node, so the remaining siblings cannot change the result. 
+I break out of the loop and add one to alpha_beta_cutoffs_this_turn.
+
+The second is the transposition table, which is only used when both use_zobrist_hashing and pruning are True. Before expanding a node, I hash the position and look it up. An entry is only used if it was searched at least as deep as I need now. 
+If the entry is EXACT, I return its value straight away without searching. 
+If it is a LOWER or UPPER bound (stored when an earlier search was pruned), I use it to tighten the window by raising alpha or lowering beta. 
+If that closes the window (alpha >= beta), I return immediately. This is counted as a useful hit.
+
+If there is no usable table entry, or hashing is off, the node is searched normally. When depth_remaining reaches 0, or there are no blank squares left, I call the static evaluation (or the autograder's special_static_eval_fn when one is supplied). 
+The static evaluation only supplies leaf scores. 
+The pruning decision is always made by comparing alpha and beta.
+</p>
+
+<p>4b. I ran make_move in AUTOGRADER mode with <code>use_alpha_beta</code> False vs True, using my real static_eval on tic-tac-toe (counting <code>num_static_evals_this_turn</code>), and also on the autograder test state with the special evaluator. Both versions chose the same move every time.</p>
+<pre>
+state                         depth   no pruning   alpha-beta   saved    reduction
+empty board                     3        504          125         379     75.2%
+empty board                     4       3024          448        2576     85.2%
+X corner, O centre (X to move)  3        210           80         130     61.9%
+X corner, O centre (X to move)  4        780          113         667     85.5%
+autograder state (O to move)    2         12            8           4     33.3%
+</pre>
+<p>The saving grows with depth, which is what I expected (the unpruned tree grows by about a factor of 6-8 per ply but alpha-beta grows much more slowly). At depth 4 from the empty board it cut 127 times.</p>
+
+<p>4c. Alpha is the best score that MAX can already force somewhere above on the current path,
+and beta is the best score MIN can already force. 
+
+Consider a MAX node it has a minimum value that can be garunteed by expanding moves via it the current max. 
+As opening more nodes will only ever result in the node taking a larger score.  
+Now look at a MIN node that is a child, it is the parent of some other MAX nodes. 
+Now if we open the first of those child MAX nodes and it has a smaller score 
+than the minimum that the grandad MAX already garuntees, then there is no point looking at the other grandchild nodes.
+As the largest the MIN will take is already smaller than the MIN garunteed already by grandad MAX.
+
+The min case is the mirror image. What makes this safe is that alpha only ever goes up and beta only ever goes down, so a window that has closed (alpha >= beta) stays closed for everything below it. 
+The returned value for a pruned node might be only a bound rather than its true minimax value, but the bound is on the correct side of the cutoff so the root value and the root move are exactly the same as plain minimax. 
+This is why I got the same move with and without pruning every time. Because I only replace the best move on a strictly better score, ties go to the first move in both versions as well.</p>
+
+<p>4d. Leaves are valued by special_static_eval_fn (in AUTOGRADER mode my own static_eval is not used). O is MIN at the root, X is MAX at the second ply.</p>
+<pre>
+Root: O to move (MIN)                              backed-up value
+ |
+ +-- O at (1,1) --> X replies (MAX):
+ |       (1,2)=91   (2,0)=10   (2,1)=20          -> max = 91
+ +-- O at (1,2) --> X replies (MAX):
+ |       (1,1)=11   (2,0)=19   (2,1)=11          -> max = 19
+ +-- O at (2,0) --> X replies (MAX):
+ |       (1,1)=20   (1,2)=109  (2,1)=11          -> max = 109
+ +-- O at (2,1) --> X replies (MAX):
+         (1,1)=30   (1,2)=101  (2,0)=11          -> max = 101
+
+Root = min(91, 19, 109, 101) = 19  -->  agent picks (1,2)
+Leaves: 4 x 3 = 12, matches the expected plain-minimax count.
+</pre>
+<p>With alpha-beta the first two branches are searched fully (3 + 3 leaves), after which beta at the root is 19. In the (2,0) branch the first leaf is 20, which is already &gt;= 19, so MAX's value there can only be 20 or more and the other two leaves (109, 11) are skipped. The same happens in the (2,1) branch with its first leaf of 30. That gives 3 + 3 + 1 + 1 = 8 leaves and 2 cutoffs, which is exactly what my run reported, and the move is still (1,2).</p>
+</font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -179,6 +260,7 @@ scan, an ASCII diagram, or a clearly formatted text tree.</font>
   <hr>
   <b>Section 5 &mdash; Static Evaluation Analysis</b> <i>(10 pts: ~4 feature design, ~4 concrete example, ~2 limitations)</i>
   <pre>
+
 5a. Feature design
     What features does your static_eval function use to score a board?
     (Examples: counts of X's and O's in rows/columns/diagonals,
@@ -197,7 +279,37 @@ scan, an ASCII diagram, or a clearly formatted text tree.</font>
     Describe at least one type of board position where your static_eval
     is likely to give a misleading score, and explain why.
   </pre>
-  <font color="blue">Write your response here.</font>
+  <font color="blue">
+<p>5a. static_eval looks at every window of k squares in a row (horizontal, vertical and both diagonals) that fits on the board. A window containing a forbidden square '-' is dead, and a window with both an X and an O in it is contested, so both are worth nothing. Every other window is counted by how many marks its owner has in it, giving x_windows[n] and o_windows[n]. The score is the sum for n = 1 to k-1 of 10^(n-1) * (x_windows[n] - o_windows[n]), so positive is good for X and negative is good for O. The intuition is that each live window is a line that could still become a win, and one extra mark makes it ten times more valuable, so a window one move from completion matters much more than a few weak ones. If a window is completed the function returns +/- 10^(k+1), which is more than any unfinished position can score for any k. Inside minimax I also treat a completed line as a terminal leaf and add or subtract depth_remaining, so quicker wins score higher and slower losses score less badly.</p>
+
+<p>5b. This is from Randy vs ALI-G tic-tac-toe game (Randy-vs-ALI-G-in-TTT-round-1). X had played (0,1) and (0,2), ALI-G (O) had played the centre, and it was O's turn:</p>
+<pre>
+  . | X | X
+ ---+---+---
+  . | O | .
+ ---+---+---
+  . | . | .
+</pre>
+<p> Observing the X only windows of 3 tiles: 
+
+row 0 has 2 X's and no O (worth 10),
+column 2 has 1 X and no O (worth 1)
+
+Observing the O only windows of 3 tiles:
+
+row 1 has 0 X's and 1 O (worth -1),
+diagonal (1,-1) has 0 X's and 1 O (worth -1)
+
+The other windows of 3 tiles are 'dead' as they have both X and O (worth 0)
+
+So the static evaluation returned 9 = (10 + 1 - 1 - 1)
+
+Correctly showing the advantage to X in this board position.
+</p>
+
+<p> 5c. (1) It ignores whose turn it is. The 9 above is for a position where O is about to block, but a leaf with the same two-in-a-row and X to move is a win for X next turn and scores the same, so at a leaf it can badly misjudge a threat. 
+(2) Overlapping windows count the same marks again and again, and open and closed lines are valued the same. In five-in-a-row, three X's in the middle of an open row make several overlapping windows, which can outscore a single four (a window worth 1000 equals ten three-windows at 100 each) even though the four is a real immediate threat. It also can't see double threats (forks) directly, only by searching deeper.</p>
+</font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -205,6 +317,7 @@ scan, an ASCII diagram, or a clearly formatted text tree.</font>
   <hr>
   <b>Section 6 &mdash; Dialog &amp; Persona Design</b> <i>(10 pts: ~3 game-state relevance, ~3 opponent responsiveness, ~2 persona consistency, ~2 approach/tools)</i>
   <pre>
+
 6a. Game-state relevance
     What features, if any, does your agent use to make its utterances
     relevant to the current board position or game trajectory?
@@ -227,9 +340,21 @@ scan, an ASCII diagram, or a clearly formatted text tree.</font>
     combination.  If you used an LLM, briefly describe your prompting
     strategy and what persona/tone instructions you gave it.
   </pre>
-  <font color="blue">Write your response here.</font>
-  </font></td></tr>
+  <font color="blue">
+<p>6a. Three things make the utterance depend on the game, all at the end of make_move. 
+  (1) The search result: the score from minimax is flipped to the mover's point of view, and if it is at least win_score the agent says WINNING_UTTERANCE with the chosen square in it (it has seen a forced win), and if it is at most -win_score it says LOSING_UTTERANCE. 
+  (2) Blocking: blocks_k_in_a_row walks the four directions from the chosen square and counts the opponent's connected pieces, and if the opponent playing there would have made k in a row it says BLOCKING_UTTERANCE. 
+  (3) Otherwise it rotates through UTTERANCE_BANK using utterance_count, and every line has the chosen square put in with .format(move). 
+  The order of checking is win, then block, then loss, then the rotation.</p>
 
+<p>6b. It doesn't, at the moment. make_move ignores current_remark completely. 
+  I decided to focus on the game playing part, so the agent only reacts to the opponent's moves (through the board) and not to what they say.</p>
+
+<p>6c. "Booyakasha! Me seen da win at (2, 2). Respect da maths g, innit." is in character because it uses Ali G's catchphrase and slang, but is confident about a forced win which makes the contrast with his dumb persona funny. "Is it cos I is thinkin ahead? (5, 6) it is." copies the bad grammar and the style of his catchphrase questions. "Ayy well that wasn't very nice" is the fake offence he takes when blocked. The twin has its own line, "Go on then, you take a headstart. I'm so much better than the original I'll still smash you.", which fits his arrogance.</p>
+
+<p>6d. A combination. I asked an LLM to write a set of in-character Ali G lines that are generic enough to reuse but still show some game awareness, and I hard coded them in the file. The code chooses between them with plain rules (above), so the utterances are deterministic and cheap to compute, which also fits the tournament where utterances don't matter. I did not use an LLM API at runtime, I had wanted to but decided to spend the time on the search instead (prepare just skips it). To genrerate the utterance bank I prompted claude to make a bank of utterances in the tone of ali-g but classroom appropriate for move taking aswell a utterance for winning and losing. </p>
+</font>
+  </font></td></tr>
   <!-- ============================================================ -->
   <tr><td><font face="Helvetica">
   <hr>
@@ -248,7 +373,16 @@ commonly hit on this assignment:
   - static_eval returning 0 for all states in a particular game type
   - prepare not returning 'OK', causing autograder failures
   </pre>
-  <font color="blue">Write your response here.</font>
+  <font color="blue">
+<p>(1) Bug: make_move could end up with no move. The symptom was a None move coming back at the start of a game. The root cause was that best_val started at -inf / +inf and a child only replaced it if its score was strictly better, so if every child scored +/-inf (or NaN) best_move was never set. The fix was to always take the first child (<code>best_move is None or ...</code>) and only replace it with a strictly better one after that.</p>
+
+<p>(2) Bug: games that never ended. The symptom was a game that kept running. The cause was in the loop in make_move, which had no good stopping rules. I fixed it by breaking out when a forced win or loss has been found (deeper search can't change it), when the depth reaches max_ply in demo mode, when the depth reaches the number of blank squares (the whole tree has been searched), and when the time budget has gone.</p>
+
+<p>(3) Difficulty: the comments suggested building the successor states in make_move, but that duplicated the work and made it hard to share the alpha-beta window between the root's children. I moved all of the successor generation into minimax so make_move makes one root call.</p>
+
+<p>(4) Difficulty with the transposition table: a table hit returns a value but no state, but make_move needs the state of the best move. So the root is never answered from the table. I also had to clear the table when the special static evaluator changes, since the stored values are not comparable.</p>
+<!-- TODO(edward): check (1) and (2) match what you actually saw; edit the symptoms if not -->
+</font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -267,7 +401,11 @@ this assignment.  Some prompts to consider:
     had not yet implemented it, what is the single most important
     thing you would tell them?
   </pre>
-  <font color="blue">Write your response here.</font>
+  <font color="blue">
+<p>I now understand how much of the work in game search is about not searching things. Before this I thought minimax was the hard bit, but the plain version was easy and then it was alpha-beta, the transposition table and iterative deepening that made the agent usable. What surprised me was how fast the saving grows with depth, 75% at depth 3 and 85% at depth 4 for tic-tac-toe, and that pruning gives exactly the same move as plain minimax.</p>
+<p>The connection I made was between static evaluation functions and reward functions for rl</p>
+<p>The most important thing I would tell a classmate is that to understand focus on understanding the order in which the nodes are opened first. </p>
+</font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -316,7 +454,33 @@ this assignment.  Some prompts to consider:
     each); otherwise describe what they contain.
     This section should not exceed 100K bytes in total.
   </pre>
-  <font color="blue">Write your response here.</font>
+  <font color="blue">
+<p>9a. Claude Code was used to draft the code and for most of the editing. 
+  I used Claude to explain the concept of Zobrist hashing, and an Claude to write the Ali G utterances.
+  I also used lecture notes and a YouTube video (see Section 3).</p>
+
+<p>9b. Authorship map:</p>
+<pre>
+ - Move generator B (Claude Code draft, I moved it into minimax)
+ - minimax skeleton B (drafted by Claude Code, reviewed and edited by me)
+ - Alpha-beta cutoff logic B (implemented by Claude Code and verified by me)
+ - static_eval function body A then B (I chose the window-counting idea and weights and drafted the algorithm, Claude Code perfected the code after)
+ - Utterance generation lines: C (written by an LLM), selection A then B
+ - introduce: A, prepare: B
+ - Extra credit (iterative
+   deepening, Zobrist table) ..... B (I learned the concept first, then reviewed the code)
+</pre>
+
+<p>9c. The closest I had to a wrong answer was in the minimax draft: best_val starts at +/-inf and a move was only recorded if its score was strictly better, so a position where every child scored the same infinity returned no move. I only found it when make_move returned None at the start of a game and traced it back (see Section 7). The suggestion that needed the most scrutiny was the transposition table, because the stored values can be bounds (UPPER or LOWER) rather than exact values, and reusing them wrongly would change the move. I checked it by comparing: with and without hashing at depth 5 from the empty board the agent chooses (1,1) both times.</p>
+
+<p>9d. What surprised me was that delegating was only useful once I knew what I wanted such that I could tell the AI what to do but also so I could check then AI output. The AI gave me a working skeleton very quickly using the assigement brief, but the parts that mattered regarding my taste, static evaluation ideas and visually checking behaviour of agent were faster not prompting. </p>
+
+<p>9e. Prompt log:</p>
+<p>(paste prompt log here)</p>
+<!-- TODO(edward): 9b, 9c, 9d are my best guesses from your notes and git log - correct them to what really happened. 9e needs your real prompts pasted in. -->
+
+
+</font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -329,7 +493,13 @@ material.  What would you explore or improve if you had more time?
 What would you do differently if you were starting this assignment
 over today?
   </pre>
-  <font color="blue">Write your response here.</font>
+  <font color="blue">
+<p>If I had more time I would first add the LLM API for utterances, as I wanted to at the start, and make the agent respond to what the opponent says, since at the moment it ignores current_remark.
+For the search, my zobrist hash is recomputed from scratch at every node by looping over the whole board, and it could be updated incrementally with one XOR per move, which would be a lot faster on the big Cassini board.
+I would also try ordering the children by static eval for better pruning, and make static_eval aware of whose turn it is and of double threats, which are the weaknesses from Section 5c.
+I'm still unsure how best to tune the weights, as I used a base of 10 without testing alternatives against each other.
+</p>
+</font>
   </font></td></tr>
 
   <!-- ============================================================ -->
@@ -348,7 +518,15 @@ subsection with:
 
 If you did not complete any extra credit options, omit this section.
   </pre>
-  <font color="blue">Write your response here (or omit this section).</font>
+  <font color="blue">
+<p>Zobrist hashing with a transposition table (and best-move ordering from the table):
+Each (square, piece) pair gets a random 64-bit key from a fixed seed (415) and a position's hash is the XOR of the keys of its pieces, with one extra key XORed in when it is O's move so that the same board with a different side to move hashes differently. The table maps hash to (depth searched, value, flag, best move). The flag is EXACT, LOWER or UPPER depending on whether the value fell inside the alpha-beta window or a cutoff happened. An entry is only reused if it was searched at least as deep as needed, a shallower search never overwrites a deeper one, and a stored best move is tried first to improve pruning.
+Measurement (tic-tac-toe, empty board, alpha-beta on, depth 5): without the table 1985 static evals and 539 cutoffs; with the table 1070 static evals (46% fewer) and 323 cutoffs. The table got 496 entries written and 207 hits, of which 183 were reused directly for a value or a cutoff and 24 were used only to order the moves. Both chose (1,1).
+I learned that the bound flags are the hard part, and that a table hit is only safe if the depth is enough.</p>
+
+<p><b>Iterative deepening with a time budget</b><br>
+make_move searches depth 1, 2, 3... and keeps the last depth that finished. The deadline is 0.8 of the time limit (at most 2.5 s in demo mode), and minimax checks the clock once every 256 nodes and raises OutOfTime if it has passed. In competition mode max_ply is the minimum and the clock decides how deep to go. It stops early if a forced win or loss is found or the whole game tree has been searched. I learned that depth 1 always has to finish so there is always a move to return.</p>
+</font>
   </font></td></tr>
 
   <tr><td><hr></td></tr>
